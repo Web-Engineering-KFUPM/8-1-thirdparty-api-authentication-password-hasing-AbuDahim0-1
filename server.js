@@ -243,23 +243,139 @@ app.get("/", (_req, res) => {
 // =========================
 // POST /register
 // =========================
+// Creates a new user. Password is hashed with bcrypt BEFORE being stored
+// so the raw password is never kept in memory or in the "database".
 app.post("/register", async (req, res) => {
-  // Implement logic here based on the TODO 1.
+  try {
+    // 1) Read JSON body
+    const { email, password } = req.body || {};
+
+    // 2) Validate required fields
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    // 3) Reject duplicate registration
+    const existing = users.find((u) => u.email === email);
+    if (existing) {
+      return res.status(400).json({ error: "User already exists" });
+    }
+
+    // 4) Hash password with bcrypt (salt auto-generated, cost factor = 10)
+    const hash = await bcrypt.hash(password, 10);
+
+    // 5) Store user with hashed password only
+    users.push({ email, passwordHash: hash });
+
+    // 6) Success
+    return res.status(201).json({ message: "User registered!" });
+  } catch (err) {
+    console.error("Register error:", err);
+    return res.status(500).json({ error: "Server error during register" });
+  }
 });
 
 // =========================
 // POST /login
 // =========================
+// Verifies credentials and issues a signed JWT valid for 1 hour.
+// The client must then send this token in the Authorization header
+// to access protected routes like /weather.
 app.post("/login", async (req, res) => {
-  // Implement logic here based on the TODO 2.
+  try {
+    // 1) Read JSON body
+    const { email, password } = req.body || {};
+
+    // 2) Validate required fields
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    // 3) Look up user by email
+    const user = users.find((u) => u.email === email);
+    if (!user) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    // 4) Compare submitted password against stored bcrypt hash
+    const match = await bcrypt.compare(password, user.passwordHash);
+    if (!match) {
+      return res.status(400).json({ error: "Wrong password" });
+    }
+
+    // 5) Sign a JWT containing the user's email. In production JWT_SECRET
+    //    would come from process.env; the lab pins it to "abc123" so the
+    //    autograder can verify tokens.
+    const token = jwt.sign(
+      { email },
+      JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    // 6) Return token to client
+    return res.json({ token });
+  } catch (err) {
+    console.error("Login error:", err);
+    return res.status(500).json({ error: "Server error during login" });
+  }
 });
 
 // =========================
 // Protected Weather API
 // GET /weather?city=Riyadh
 // =========================
+// Protected by JWT. Calls the wttr.in third-party weather API.
+// wttr.in requires no API key, so there is nothing to hide in .env for this lab;
+// if a key-based provider (e.g. OpenWeatherMap) were used instead, the key
+// would be loaded from process.env.WEATHER_API_KEY.
 app.get("/weather", async (req, res) => {
-  // Implement logic here based on the TODO 3.
+  try {
+    // 1) Read Authorization header: "Bearer <token>"
+    const auth = req.headers.authorization;
+    if (!auth) {
+      return res.status(401).json({ error: "Missing token" });
+    }
+
+    // 2) Extract the token portion after "Bearer "
+    const token = auth.split(" ")[1];
+
+    // 3) Verify the token signature & expiry; reject on any failure
+    try {
+      jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    // 4) Require a city query parameter
+    const city = req.query.city;
+    if (!city) {
+      return res.status(400).json({ error: "City required" });
+    }
+
+    // 5) Build external weather API URL (encode city to avoid URL injection)
+    const url = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
+
+    // 6) Call the third-party API
+    const weatherResponse = await fetch(url);
+    if (!weatherResponse.ok) {
+      return res.status(500).json({ error: "Error from weather API" });
+    }
+
+    // 7) Parse JSON response
+    const data = await weatherResponse.json();
+
+    // 8) Return a structured payload (plus raw data for inspection)
+    return res.json({
+      city,
+      temp: data.temperature,
+      description: data.description,
+      wind: data.wind,
+      raw: data,
+    });
+  } catch (err) {
+    console.error("Weather fetch error:", err);
+    return res.status(500).json({ error: "Server error during weather fetch" });
+  }
 });
 
 // Start server
